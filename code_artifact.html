@@ -1,0 +1,642 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EcoHand: เกมแยกขยะด้วย AI ตรวจจับนิ้วมือ</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- โหลด MediaPipe Hands และ Camera Utils -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Kanit:wght@300;400;600&display=swap');
+        body {
+            font-family: 'Kanit', sans-serif;
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #0f172a;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            user-select: none;
+        }
+        #game-container {
+            position: relative;
+            width: 100%;
+            max-width: 1280px;
+            aspect-ratio: 16/9;
+            background-color: #000;
+            border-radius: 1rem;
+            overflow: hidden;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7);
+        }
+        #input_video {
+            display: none;
+        }
+        #output_canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 10;
+        }
+        .ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 20;
+            pointer-events: none;
+        }
+        .interactive-ui {
+            pointer-events: auto;
+        }
+    </style>
+</head>
+<body>
+
+<div id="game-container">
+    <video id="input_video" autoplay playsinline muted></video>
+    <canvas id="output_canvas"></canvas>
+
+    <!-- หน้าเมนูหลัก -->
+    <div id="start-screen" class="ui-layer interactive-ui flex flex-col items-center justify-center bg-gray-900/95 transition-opacity duration-500 p-6">
+        <h1 class="text-5xl md:text-6xl font-bold text-green-400 mb-2 text-center drop-shadow-md">
+            EcoHand<br><span class="text-2xl md:text-3xl text-white">เกมแยกขยะด้วย AI ตรวจจับนิ้วมือ</span>
+        </h1>
+        <p class="text-base md:text-lg text-gray-300 mb-6 max-w-xl text-center">
+            ใช้กล้องเว็บแคมตรวจจับนิ้วมือแบบ Real-time<br>
+            <b>วิธีกดหยิบ:</b> ใช้ท่าทาง <b>"จีบนิ้ว"</b> (นำนิ้วโป้งแตะนิ้วชี้) เพื่อหยิบขยะ แล้วลากไปปล่อยลงถังขยะให้ถูกต้อง
+        </p>
+        
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6 text-center w-full max-w-3xl">
+            <div class="bg-green-600/30 p-3 rounded-xl border border-green-500">
+                <div class="text-3xl mb-1">🍎</div>
+                <div class="font-bold text-green-400">ขยะเปียก</div>
+            </div>
+            <div class="bg-yellow-600/30 p-3 rounded-xl border border-yellow-500">
+                <div class="text-3xl mb-1">🍾</div>
+                <div class="font-bold text-yellow-400">รีไซเคิล</div>
+            </div>
+            <div class="bg-blue-600/30 p-3 rounded-xl border border-blue-500">
+                <div class="text-3xl mb-1">🛍️</div>
+                <div class="font-bold text-blue-400">ทั่วไป</div>
+            </div>
+            <div class="bg-red-600/30 p-3 rounded-xl border border-red-500">
+                <div class="text-3xl mb-1">🔋</div>
+                <div class="font-bold text-red-400">อันตราย</div>
+            </div>
+        </div>
+
+        <div class="flex flex-col sm:flex-row gap-4">
+            <button id="start-btn" class="px-8 py-3 bg-green-500 hover:bg-green-600 text-white text-xl font-bold rounded-full shadow-lg transform hover:scale-105 transition-all">
+                📷 เปิดกล้องและเริ่มเล่น
+            </button>
+            <button id="mouse-btn" class="px-8 py-3 bg-indigo-600 hover:bg-indigo-700 text-white text-xl font-bold rounded-full shadow-lg transform hover:scale-105 transition-all">
+                🖱️ เล่นด้วยเมาส์ / ทัชสกรีน
+            </button>
+        </div>
+        <p id="status-msg" class="text-yellow-400 mt-4 text-sm font-semibold hidden animate-pulse"></p>
+    </div>
+
+    <!-- หน้าเกมโอเวอร์ -->
+    <div id="game-over-screen" class="ui-layer interactive-ui flex flex-col items-center justify-center bg-red-950/95 hidden">
+        <h1 class="text-6xl font-bold text-white mb-2">หมดเวลา!</h1>
+        <p class="text-3xl text-yellow-300 mb-8">คะแนนรวม: <span id="final-score">0</span> คะแนน</p>
+        <button id="restart-btn" class="px-8 py-4 bg-white text-red-900 hover:bg-gray-100 text-2xl font-bold rounded-full shadow-lg transform hover:scale-105 transition-all">
+            เล่นอีกครั้ง
+        </button>
+    </div>
+
+    <!-- HUD คะแนน เวลา และสถานะตรวจจับมือ -->
+    <div id="hud" class="ui-layer hidden flex flex-col justify-between p-6 pointer-events-none">
+        <div class="flex justify-between items-center w-full">
+            <div class="bg-black/70 px-6 py-2 rounded-full border border-gray-600">
+                <span class="text-gray-300 text-xl font-bold">คะแนน: </span>
+                <span id="score-display" class="text-yellow-400 text-3xl font-bold">0</span>
+            </div>
+            <!-- แถบแจ้งสถานะการตรวจจับมือ -->
+            <div id="hand-status-badge" class="bg-black/70 px-6 py-2 rounded-full border border-red-500 text-red-400 font-bold text-lg">
+                ⚠️ กำลังค้นหามือหน้ากล้อง...
+            </div>
+            <div class="bg-black/70 px-6 py-2 rounded-full border border-gray-600">
+                <span class="text-gray-300 text-xl font-bold">เวลา: </span>
+                <span id="time-display" class="text-white text-3xl font-bold">60</span>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    const videoElement = document.getElementById('input_video');
+    const canvasElement = document.getElementById('output_canvas');
+    const canvasCtx = canvasElement.getContext('2d');
+    
+    const startScreen = document.getElementById('start-screen');
+    const gameOverScreen = document.getElementById('game-over-screen');
+    const hud = document.getElementById('hud');
+    const startBtn = document.getElementById('start-btn');
+    const mouseBtn = document.getElementById('mouse-btn');
+    const restartBtn = document.getElementById('restart-btn');
+    const statusMsg = document.getElementById('status-msg');
+    const scoreDisplay = document.getElementById('score-display');
+    const timeDisplay = document.getElementById('time-display');
+    const finalScoreDisplay = document.getElementById('final-score');
+    const handStatusBadge = document.getElementById('hand-status-badge');
+
+    canvasElement.width = 1280;
+    canvasElement.height = 720;
+
+    const trashDatabase = [
+        { emoji: '🍌', type: 'organic' },
+        { emoji: '🍎', type: 'organic' },
+        { emoji: '🍉', type: 'organic' },
+        { emoji: '🍾', type: 'recycle' },
+        { emoji: '📰', type: 'recycle' },
+        { emoji: '📦', type: 'recycle' },
+        { emoji: '🛍️', type: 'general' },
+        { emoji: '🍬', type: 'general' },
+        { emoji: '🥤', type: 'general' },
+        { emoji: '🔋', type: 'hazardous' },
+        { emoji: '💡', type: 'hazardous' },
+        { emoji: '💊', type: 'hazardous' }
+    ];
+
+    const bins = [
+        { type: 'organic', color: '#22c55e', label: 'ขยะเปียก', x: 0, y: canvasElement.height - 140, width: canvasElement.width / 4, height: 140 },
+        { type: 'recycle', color: '#eab308', label: 'รีไซเคิล', x: canvasElement.width / 4, y: canvasElement.height - 140, width: canvasElement.width / 4, height: 140 },
+        { type: 'general', color: '#3b82f6', label: 'ทั่วไป', x: (canvasElement.width / 4) * 2, y: canvasElement.height - 140, width: canvasElement.width / 4, height: 140 },
+        { type: 'hazardous', color: '#ef4444', label: 'อันตราย', x: (canvasElement.width / 4) * 3, y: canvasElement.height - 140, width: canvasElement.width / 4, height: 140 }
+    ];
+
+    // โครงสร้างเส้นเชื่อมต่อจุดบนมือ (Hand Skeleton Connections)
+    const HAND_CONNECTIONS = [
+        [0, 1], [1, 2], [2, 3], [3, 4],       // นิ้วโป้ง
+        [0, 5], [5, 6], [6, 7], [7, 8],       // นิ้วชี้
+        [5, 9], [9, 10], [10, 11], [11, 12],  // นิ้วกลาง
+        [9, 13], [13, 14], [14, 15], [15, 16], // นิ้วนาง
+        [13, 17], [0, 17], [17, 18], [18, 19], [19, 20] // นิ้วก้อย
+    ];
+
+    let gameState = 'menu';
+    let score = 0;
+    let timeLeft = 60;
+    let items = [];
+    
+    // พิกัดนิ้วมือ
+    let indexFingerPos = { x: canvasElement.width / 2, y: canvasElement.height / 2 };
+    let thumbFingerPos = { x: canvasElement.width / 2, y: canvasElement.height / 2 };
+    let currentLandmarks = null;
+    let isPinching = false;
+    let isHandDetected = false;
+
+    let grabbedItem = null;
+    let lastTime = 0;
+    let spawnTimer = 0;
+    let gameInterval = null;
+    let cameraInstance = null;
+    let handsInstance = null;
+    let useMouseMode = false;
+
+    // --- เริ่มต้นระบบ MediaPipe AI Tracking ---
+    function initMediaPipe() {
+        handsInstance = new Hands({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+        });
+
+        handsInstance.setOptions({
+            maxNumHands: 1,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.65,
+            minTrackingConfidence: 0.65
+        });
+
+        handsInstance.onResults(onResults);
+    }
+
+    function onResults(results) {
+        if (useMouseMode) return;
+
+        if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+            isHandDetected = true;
+            currentLandmarks = results.multiHandLandmarks[0];
+
+            // ดึงพิกัดปลายนิ้วชี้ (Landmark 8) และปลายนิ้วโป้ง (Landmark 4)
+            const indexTip = currentLandmarks[8];
+            const thumbTip = currentLandmarks[4];
+
+            // คำนวณพิกัดให้ตรงกับ Canvas (กลับด้าน X แบบกระจกเงา)
+            indexFingerPos.x = (1 - indexTip.x) * canvasElement.width;
+            indexFingerPos.y = indexTip.y * canvasElement.height;
+
+            thumbFingerPos.x = (1 - thumbTip.x) * canvasElement.width;
+            thumbFingerPos.y = thumbTip.y * canvasElement.height;
+
+            // ตรวจจับการ "จีบนิ้ว" (ระยะห่างระหว่างปลายนิ้วชี้กับนิ้วโป้ง)
+            const dx = (indexTip.x - thumbTip.x) * canvasElement.width;
+            const dy = (indexTip.y - thumbTip.y) * canvasElement.height;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+
+            const wasPinching = isPinching;
+            isPinching = distance < 65; // ระยะจีบนิ้ว (พิกเซล)
+
+            // ลอจิกการจับขยะ
+            if (gameState === 'playing') {
+                if (isPinching && !wasPinching && !grabbedItem) {
+                    for (let i = items.length - 1; i >= 0; i--) {
+                        let item = items[i];
+                        const distToItem = Math.sqrt(Math.pow(indexFingerPos.x - item.x, 2) + Math.pow(indexFingerPos.y - item.y, 2));
+                        if (distToItem < item.radius + 40) {
+                            grabbedItem = item;
+                            item.isGrabbed = true;
+                            break;
+                        }
+                    }
+                } else if (!isPinching && wasPinching && grabbedItem) {
+                    checkDropInBin(grabbedItem);
+                    grabbedItem.isGrabbed = false;
+                    grabbedItem = null;
+                }
+            }
+
+            // อัปเดตป้ายบอกสถานะ
+            handStatusBadge.innerText = isPinching ? "👌 ตรวจพบการจีบนิ้ว (กำลังหยิบ)" : "✋ ตรวจพบนิ้วมือแล้ว";
+            handStatusBadge.className = "bg-black/70 px-6 py-2 rounded-full border border-green-500 text-green-400 font-bold text-lg";
+
+        } else {
+            isHandDetected = false;
+            currentLandmarks = null;
+            if (grabbedItem) {
+                grabbedItem.isGrabbed = false;
+                grabbedItem = null;
+            }
+            handStatusBadge.innerText = "⚠️ กำลังค้นหามือหน้ากล้อง...";
+            handStatusBadge.className = "bg-black/70 px-6 py-2 rounded-full border border-red-500 text-red-400 font-bold text-lg animate-pulse";
+        }
+    }
+
+    // เริ่มกล้อง
+    async function initCamera() {
+        try {
+            statusMsg.innerText = "กำลังดาวน์โหลดโมเดล AI และเปิดกล้อง...";
+            statusMsg.classList.remove('hidden');
+
+            if (!handsInstance) initMediaPipe();
+
+            cameraInstance = new Camera(videoElement, {
+                onFrame: async () => {
+                    if (handsInstance) {
+                        await handsInstance.send({ image: videoElement });
+                    }
+                },
+                width: 1280,
+                height: 720
+            });
+
+            await cameraInstance.start();
+            useMouseMode = false;
+            beginGameLogic();
+        } catch (err) {
+            console.warn("ไม่สามารถเปิดกล้องได้ สลับไปใช้โหมดเมาส์:", err);
+            statusMsg.innerText = "ไม่สามารถเปิดกล้องได้ เปลี่ยนเป็นโหมดเมาส์/ทัชสกรีนแทน";
+            setTimeout(() => {
+                startGameWithMouse();
+            }, 1200);
+        }
+    }
+
+    // โหมดควบคุมด้วยเมาส์/ทัชสกรีน
+    function setupMouseEvents() {
+        const updatePos = (e) => {
+            const rect = canvasElement.getBoundingClientRect();
+            const scaleX = canvasElement.width / rect.width;
+            const scaleY = canvasElement.height / rect.height;
+            indexFingerPos.x = (e.clientX - rect.left) * scaleX;
+            indexFingerPos.y = (e.clientY - rect.top) * scaleY;
+        };
+
+        window.addEventListener('mousemove', (e) => { if (useMouseMode) updatePos(e); });
+        
+        window.addEventListener('mousedown', (e) => {
+            if (!useMouseMode || gameState !== 'playing') return;
+            updatePos(e);
+            isPinching = true;
+            
+            for (let i = items.length - 1; i >= 0; i--) {
+                let item = items[i];
+                const dist = Math.sqrt(Math.pow(indexFingerPos.x - item.x, 2) + Math.pow(indexFingerPos.y - item.y, 2));
+                if (dist < item.radius + 35) {
+                    grabbedItem = item;
+                    item.isGrabbed = true;
+                    break;
+                }
+            }
+        });
+
+        window.addEventListener('mouseup', () => {
+            if (!useMouseMode) return;
+            isPinching = false;
+            if (grabbedItem) {
+                checkDropInBin(grabbedItem);
+                grabbedItem.isGrabbed = false;
+                grabbedItem = null;
+            }
+        });
+
+        window.addEventListener('touchmove', (e) => {
+            if (useMouseMode && e.touches.length > 0) updatePos(e.touches[0]);
+        });
+        window.addEventListener('touchstart', (e) => {
+            if (useMouseMode && e.touches.length > 0) {
+                updatePos(e.touches[0]);
+                isPinching = true;
+                for (let i = items.length - 1; i >= 0; i--) {
+                    let item = items[i];
+                    const dist = Math.sqrt(Math.pow(indexFingerPos.x - item.x, 2) + Math.pow(indexFingerPos.y - item.y, 2));
+                    if (dist < item.radius + 35) {
+                        grabbedItem = item;
+                        item.isGrabbed = true;
+                        break;
+                    }
+                }
+            }
+        });
+        window.addEventListener('touchend', () => {
+            if (useMouseMode) {
+                isPinching = false;
+                if (grabbedItem) {
+                    checkDropInBin(grabbedItem);
+                    grabbedItem.isGrabbed = false;
+                    grabbedItem = null;
+                }
+            }
+        });
+    }
+
+    function startGameWithMouse() {
+        useMouseMode = true;
+        handStatusBadge.innerText = "🖱️ โหมดเมาส์ / ทัชสกรีน";
+        handStatusBadge.className = "bg-black/70 px-6 py-2 rounded-full border border-indigo-500 text-indigo-300 font-bold text-lg";
+        beginGameLogic();
+    }
+
+    function checkDropInBin(item) {
+        let droppedInBin = null;
+        for (let bin of bins) {
+            if (item.x >= bin.x && item.x <= bin.x + bin.width &&
+                item.y >= bin.y && item.y <= bin.y + bin.height) {
+                droppedInBin = bin;
+                break;
+            }
+        }
+
+        if (droppedInBin) {
+            if (item.type === droppedInBin.type) {
+                score += 10;
+                createFloatingText('+10', item.x, item.y, '#4ade80');
+            } else {
+                score = Math.max(0, score - 5);
+                createFloatingText('-5', item.x, item.y, '#f87171');
+            }
+            scoreDisplay.innerText = score;
+            items = items.filter(i => i !== item);
+        }
+    }
+
+    let floatingTexts = [];
+    function createFloatingText(text, x, y, color) {
+        floatingTexts.push({ text, x, y, color, life: 60 });
+    }
+
+    function spawnItem() {
+        const randomItem = trashDatabase[Math.floor(Math.random() * trashDatabase.length)];
+        const spawnX = Math.random() * (canvasElement.width - 200) + 100;
+        items.push({
+            emoji: randomItem.emoji,
+            type: randomItem.type,
+            x: spawnX,
+            y: -40,
+            radius: 35,
+            speed: Math.random() * 1.5 + 2,
+            isGrabbed: false
+        });
+    }
+
+    function gameLoop(timestamp) {
+        if (!lastTime) lastTime = timestamp;
+        const deltaTime = timestamp - lastTime;
+        lastTime = timestamp;
+
+        canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+
+        // วาดภาพวิดีโอกล้องแบบกระจกเงา
+        if (!useMouseMode && videoElement.readyState >= 2) {
+            canvasCtx.save();
+            canvasCtx.scale(-1, 1);
+            canvasCtx.drawImage(videoElement, -canvasElement.width, 0, canvasElement.width, canvasElement.height);
+            canvasCtx.restore();
+
+            // วาดโครงกระดูกมือ (Hand Skeleton) ขึ้นบนวิดีโอ
+            if (currentLandmarks) {
+                drawHandSkeleton(currentLandmarks);
+            }
+        } else {
+            canvasCtx.fillStyle = '#0f172a';
+            canvasCtx.fillRect(0, 0, canvasElement.width, canvasElement.height);
+        }
+
+        if (gameState === 'playing') {
+            updateGame(deltaTime);
+        }
+
+        drawGame();
+        requestAnimationFrame(gameLoop);
+    }
+
+    // วาดโครงกระดูกและข้อต่อนิ้วมือ
+    function drawHandSkeleton(landmarks) {
+        // วาดเส้นเชื่อมต่อข้อต่อนิ้ว
+        canvasCtx.strokeStyle = 'rgba(74, 222, 128, 0.8)';
+        canvasCtx.lineWidth = 3;
+
+        HAND_CONNECTIONS.forEach(([i, j]) => {
+            const p1 = landmarks[i];
+            const p2 = landmarks[j];
+
+            const x1 = (1 - p1.x) * canvasElement.width;
+            const y1 = p1.y * canvasElement.height;
+            const x2 = (1 - p2.x) * canvasElement.width;
+            const y2 = p2.y * canvasElement.height;
+
+            canvasCtx.beginPath();
+            canvasCtx.moveTo(x1, y1);
+            canvasCtx.lineTo(x2, y2);
+            canvasCtx.stroke();
+        });
+
+        // วาดจุดข้อต่อทั้ง 21 จุด
+        landmarks.forEach((lm, idx) => {
+            const x = (1 - lm.x) * canvasElement.width;
+            const y = lm.y * canvasElement.height;
+
+            canvasCtx.beginPath();
+            canvasCtx.arc(x, y, idx === 8 || idx === 4 ? 8 : 4, 0, 2 * Math.PI);
+            canvasCtx.fillStyle = (idx === 8 || idx === 4) ? '#facc15' : '#ffffff';
+            canvasCtx.fill();
+        });
+    }
+
+    function updateGame(deltaTime) {
+        spawnTimer += deltaTime;
+        if (spawnTimer > 1800) {
+            spawnItem();
+            spawnTimer = 0;
+        }
+
+        for (let i = items.length - 1; i >= 0; i--) {
+            let item = items[i];
+            
+            if (item.isGrabbed) {
+                item.x += (indexFingerPos.x - item.x) * 0.3;
+                item.y += (indexFingerPos.y - item.y) * 0.3;
+            } else {
+                item.y += item.speed;
+                if (item.y > canvasElement.height + 50) {
+                    items.splice(i, 1);
+                }
+            }
+        }
+
+        for (let i = floatingTexts.length - 1; i >= 0; i--) {
+            floatingTexts[i].y -= 1.5;
+            floatingTexts[i].life -= 1;
+            if (floatingTexts[i].life <= 0) floatingTexts.splice(i, 1);
+        }
+    }
+
+    function drawGame() {
+        // วาดถังขยะ
+        canvasCtx.globalAlpha = 0.85;
+        bins.forEach(bin => {
+            canvasCtx.fillStyle = bin.color;
+            canvasCtx.fillRect(bin.x, bin.y, bin.width, bin.height);
+            canvasCtx.strokeStyle = 'rgba(255,255,255,0.7)';
+            canvasCtx.lineWidth = 3;
+            canvasCtx.strokeRect(bin.x, bin.y, bin.width, bin.height);
+            
+            canvasCtx.fillStyle = '#ffffff';
+            canvasCtx.font = 'bold 32px Kanit, sans-serif';
+            canvasCtx.textAlign = 'center';
+            canvasCtx.textBaseline = 'middle';
+            canvasCtx.shadowColor = "rgba(0,0,0,0.8)";
+            canvasCtx.shadowBlur = 4;
+            canvasCtx.fillText(bin.label, bin.x + bin.width/2, bin.y + bin.height/2);
+            canvasCtx.shadowColor = "transparent";
+        });
+        canvasCtx.globalAlpha = 1.0;
+
+        // วาดขยะ
+        canvasCtx.textAlign = 'center';
+        canvasCtx.textBaseline = 'middle';
+        items.forEach(item => {
+            canvasCtx.font = `${item.radius * 2}px Arial`;
+            if (item.isGrabbed) {
+                canvasCtx.shadowColor = "rgba(255, 255, 255, 1)";
+                canvasCtx.shadowBlur = 25;
+            } else {
+                canvasCtx.shadowColor = "rgba(0,0,0,0.6)";
+                canvasCtx.shadowBlur = 6;
+            }
+            canvasCtx.fillText(item.emoji, item.x, item.y);
+            canvasCtx.shadowBlur = 0;
+        });
+
+        // วาดเป้าตัวชี้ปลายนิ้วชี้ (Index Finger Cursor Tracker)
+        if (isHandDetected || useMouseMode) {
+            canvasCtx.beginPath();
+            canvasCtx.arc(indexFingerPos.x, indexFingerPos.y, 26, 0, 2 * Math.PI);
+            
+            if (isPinching) {
+                canvasCtx.fillStyle = 'rgba(34, 197, 94, 0.9)';
+                canvasCtx.fill();
+                canvasCtx.strokeStyle = '#ffffff';
+                canvasCtx.lineWidth = 4;
+                canvasCtx.stroke();
+            } else {
+                canvasCtx.strokeStyle = 'rgba(250, 204, 21, 0.9)';
+                canvasCtx.lineWidth = 4;
+                canvasCtx.stroke();
+            }
+
+            // แสดงไอคอนมือชี้ป้ายบอกทาง
+            canvasCtx.fillStyle = '#ffffff';
+            canvasCtx.font = '22px Arial';
+            canvasCtx.fillText(grabbedItem ? '✊' : '👉', indexFingerPos.x, indexFingerPos.y);
+
+            // วาดป้ายข้อความกำกับที่ปลายนิ้วชี้
+            if (!useMouseMode) {
+                canvasCtx.font = 'bold 16px Kanit, sans-serif';
+                canvasCtx.fillStyle = '#facc15';
+                canvasCtx.fillText("ปลายนิ้วชี้", indexFingerPos.x, indexFingerPos.y - 35);
+            }
+        }
+
+        // วาดข้อความแสดงคะแนน
+        floatingTexts.forEach(ft => {
+            canvasCtx.fillStyle = ft.color;
+            canvasCtx.font = 'bold 36px Kanit, sans-serif';
+            canvasCtx.globalAlpha = ft.life / 60;
+            canvasCtx.fillText(ft.text, ft.x, ft.y);
+        });
+        canvasCtx.globalAlpha = 1.0;
+    }
+
+    function beginGameLogic() {
+        startScreen.classList.add('hidden');
+        gameOverScreen.classList.add('hidden');
+        statusMsg.classList.add('hidden');
+        hud.classList.remove('hidden');
+        
+        score = 0;
+        timeLeft = 60;
+        items = [];
+        scoreDisplay.innerText = score;
+        timeDisplay.innerText = timeLeft;
+        gameState = 'playing';
+        
+        if (gameInterval) clearInterval(gameInterval);
+        gameInterval = setInterval(() => {
+            timeLeft--;
+            timeDisplay.innerText = timeLeft;
+            if (timeLeft <= 0) {
+                endGame();
+            }
+        }, 1000);
+    }
+
+    function endGame() {
+        gameState = 'gameover';
+        clearInterval(gameInterval);
+        hud.classList.add('hidden');
+        gameOverScreen.classList.remove('hidden');
+        finalScoreDisplay.innerText = score;
+        items = [];
+        grabbedItem = null;
+    }
+
+    window.onload = () => {
+        setupMouseEvents();
+        requestAnimationFrame(gameLoop);
+    };
+
+    startBtn.addEventListener('click', initCamera);
+    mouseBtn.addEventListener('click', startGameWithMouse);
+    restartBtn.addEventListener('click', beginGameLogic);
+
+</script>
+</body>
+</html>
